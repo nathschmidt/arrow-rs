@@ -173,6 +173,7 @@ struct PutRequest<'a> {
     path: &'a Path,
     config: &'a AzureConfig,
     builder: RequestBuilder,
+    idempotent: bool,
 }
 
 impl<'a> PutRequest<'a> {
@@ -186,12 +187,17 @@ impl<'a> PutRequest<'a> {
         Self { builder, ..self }
     }
 
+    fn set_idempotent(mut self, idempotent: bool) -> Self {
+        self.idempotent = idempotent;
+        self
+    }
+
     async fn send(self) -> Result<Response> {
         let credential = self.config.get_credential().await?;
         let response = self
             .builder
             .with_azure_authorization(&credential, &self.config.account)
-            .send_retry(&self.config.retry_config)
+            .send_retry_with_idempotency(&self.config.retry_config, self.idempotent)
             .await
             .context(PutRequestSnafu {
                 path: self.path.as_ref(),
@@ -240,6 +246,7 @@ impl AzureClient {
             path,
             builder,
             config: &self.config,
+            idempotent: false,
         }
     }
 
@@ -248,7 +255,7 @@ impl AzureClient {
         let builder = self.put_request(path, bytes);
 
         let builder = match &opts.mode {
-            PutMode::Overwrite => builder,
+            PutMode::Overwrite => builder.set_idempotent(true),
             PutMode::Create => builder.header(&IF_NONE_MATCH, "*"),
             PutMode::Update(v) => {
                 let etag = v.e_tag.as_ref().context(MissingETagSnafu)?;
@@ -272,6 +279,7 @@ impl AzureClient {
 
         self.put_request(path, data)
             .query(&[("comp", "block"), ("blockid", &block_id)])
+            .set_idempotent(true)
             .send()
             .await?;
 
@@ -288,6 +296,7 @@ impl AzureClient {
         let response = self
             .put_request(path, BlockList { blocks }.to_xml().into())
             .query(&[("comp", "blocklist")])
+            .set_idempotent(true)
             .send()
             .await?;
 
@@ -341,7 +350,7 @@ impl AzureClient {
 
         builder
             .with_azure_authorization(&credential, &self.config.account)
-            .send_retry(&self.config.retry_config)
+            .send_retry_with_idempotency(&self.config.retry_config, true)
             .await
             .map_err(|err| err.error(STORE, from.to_string()))?;
 
@@ -374,7 +383,7 @@ impl AzureClient {
             .body(body)
             .query(&[("restype", "service"), ("comp", "userdelegationkey")])
             .with_azure_authorization(&credential, &self.config.account)
-            .send_retry(&self.config.retry_config)
+            .send_retry_with_idempotency(&self.config.retry_config, true)
             .await
             .context(DelegationKeyRequestSnafu)?
             .bytes()

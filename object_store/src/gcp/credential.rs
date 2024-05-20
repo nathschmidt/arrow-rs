@@ -441,7 +441,7 @@ impl TokenProvider for AuthorizedUserCredentials {
                 ("client_secret", &self.client_secret),
                 ("refresh_token", &self.refresh_token),
             ])
-            .send_retry(retry)
+            .send_retry_with_idempotency(retry, true)
             .await
             .context(TokenRequestSnafu)?
             .json::<TokenResponse>()
